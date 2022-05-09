@@ -1,8 +1,14 @@
-use std::{fs::File, io::{Result, Write}};
+use std::{
+    fs::File,
+    io::{Result, Write},
+};
 
 const SAMPLE_RATE: u32 = 44100;
 const NUM_CHANNELS: u16 = 1;
-const BITS_PER_SAMPLE: u16 = 8;
+const BITS_PER_SAMPLE: u16 = 16;
+
+const SUBCHUNK1_SIZE: u32 = 16;
+const AUDIO_FORMAT: u16 = 1; // PCM = 1
 
 fn generate_samples(secs: u32, freq: f64) -> Vec<u8> {
     let num_samples = secs * SAMPLE_RATE;
@@ -11,26 +17,42 @@ fn generate_samples(secs: u32, freq: f64) -> Vec<u8> {
     for t in 0..num_samples {
         let w = two_pi * freq * t as f64 / SAMPLE_RATE as f64;
         let s = f64::sin(w);
-        let s = f64::floor(255.0 * (0.5 * s + 0.5)) as u8;
-        buffer.push(s);
+        match BITS_PER_SAMPLE {
+            8 => {
+                let s = f64::floor(255.0 * (0.5 * s + 0.5)) as u8;
+                buffer.push(s);
+            },
+            16 => {
+                let w = two_pi * freq * t as f64 / SAMPLE_RATE as f64;
+                let s = f64::sin(w);
+                let (in_min, in_max) = (-1.0, 1.0);
+                let (out_min, out_max) = (i16::MIN as f64, i16::MAX as f64);
+                let slope = (out_max - out_min) / (in_max - in_min);
+                let scaled = out_min + slope * (s - in_min);
+                buffer.extend_from_slice(&(scaled as i16).to_le_bytes());
+            },
+            _ => {
+                println!("Unsupported bits per sample: {}", BITS_PER_SAMPLE);
+                break;
+            }
+        }
     }
     buffer
 }
 
 fn generate_header(subchunk2_size: u32) -> Vec<u8> {
     let mut buffer = Vec::new();
-    let subchunk1_size = 16;
 
     // RIFF header
+    let chunk_size = 4 + (8 + SUBCHUNK1_SIZE) + (8 + subchunk2_size);
     buffer.extend_from_slice(b"RIFF");
-    let chunk_size = 4 + (8 + subchunk1_size) + (8 + subchunk2_size);
     buffer.extend_from_slice(&chunk_size.to_ne_bytes());
     buffer.extend_from_slice(b"WAVE");
 
     // Format chunk
     buffer.extend_from_slice(b"fmt ");
-    buffer.extend_from_slice(&subchunk1_size.to_le_bytes()); // chunk size
-    buffer.extend_from_slice(&1_u16.to_le_bytes()); // audio format
+    buffer.extend_from_slice(&SUBCHUNK1_SIZE.to_le_bytes()); // chunk size
+    buffer.extend_from_slice(&AUDIO_FORMAT.to_le_bytes()); // audio format
     buffer.extend_from_slice(&NUM_CHANNELS.to_le_bytes()); // num channels
     buffer.extend_from_slice(&SAMPLE_RATE.to_le_bytes()); // sample rate
 
