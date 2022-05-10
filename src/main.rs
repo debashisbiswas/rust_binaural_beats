@@ -1,39 +1,61 @@
 use std::{
+    f64::consts::PI,
     fs::File,
-    io::{Result, Write},
+    io::{Error, Write},
 };
 
 const SAMPLE_RATE: u32 = 44100;
-const NUM_CHANNELS: u16 = 1;
+const NUM_CHANNELS: u16 = 2;
 const BITS_PER_SAMPLE: u16 = 16;
 
 const SUBCHUNK1_SIZE: u32 = 16;
 const AUDIO_FORMAT: u16 = 1; // PCM = 1
 
+fn make_sin_sample(step: f64, freq: f64) -> Result<Vec<u8>, &'static str> {
+    let mut output = Vec::new();
+    let sin = f64::sin(2.0 * PI * freq * step / SAMPLE_RATE as f64);
+    match BITS_PER_SAMPLE {
+        8 => {
+            let s = f64::floor(255.0 * (0.5 * sin + 0.5)) as u8;
+            output.push(s);
+        }
+        16 => {
+            let (in_min, in_max) = (-1.0, 1.0);
+            let (out_min, out_max) = (i16::MIN as f64, i16::MAX as f64);
+            let slope = (out_max - out_min) / (in_max - in_min);
+            let scaled = out_min + slope * (sin - in_min);
+            output.extend_from_slice(&(scaled as i16).to_le_bytes());
+        }
+        _ => return Err("Unsupported bits per sample"),
+    }
+    Ok(output)
+}
+
 fn generate_samples(secs: u32, freq: f64) -> Vec<u8> {
-    let num_samples = secs * SAMPLE_RATE;
+    let num_samples = secs * SAMPLE_RATE * NUM_CHANNELS as u32;
     let mut buffer = Vec::with_capacity(num_samples as usize);
-    let two_pi = 2.0 * std::f64::consts::PI;
+    let difference: f64 = 1.0;
+
     for t in 0..num_samples {
-        let w = two_pi * freq * t as f64 / SAMPLE_RATE as f64;
-        let s = f64::sin(w);
-        match BITS_PER_SAMPLE {
-            8 => {
-                let s = f64::floor(255.0 * (0.5 * s + 0.5)) as u8;
-                buffer.push(s);
-            },
-            16 => {
-                let w = two_pi * freq * t as f64 / SAMPLE_RATE as f64;
-                let s = f64::sin(w);
-                let (in_min, in_max) = (-1.0, 1.0);
-                let (out_min, out_max) = (i16::MIN as f64, i16::MAX as f64);
-                let slope = (out_max - out_min) / (in_max - in_min);
-                let scaled = out_min + slope * (s - in_min);
-                buffer.extend_from_slice(&(scaled as i16).to_le_bytes());
-            },
-            _ => {
-                println!("Unsupported bits per sample: {}", BITS_PER_SAMPLE);
+        let t = t as f64;
+        let left_sample = make_sin_sample(t, freq);
+        match left_sample {
+            Ok(samples) => buffer.extend(samples),
+            Err(e) => {
+                println!("{}", e);
                 break;
+            }
+        }
+
+        if NUM_CHANNELS == 2 {
+            let freq = freq + difference;
+            let right_sample = make_sin_sample(t, freq);
+            match right_sample {
+                Ok(samples) => buffer.extend(samples),
+                Err(e) => {
+                    println!("{}", e);
+                    break;
+                }
             }
         }
     }
@@ -70,9 +92,9 @@ fn generate_header(subchunk2_size: u32) -> Vec<u8> {
     buffer
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), Error> {
     let mut file = File::create("out.wav")?;
-    let samples = generate_samples(5, 220.0);
+    let samples = generate_samples(20, 220.0);
     let header = generate_header(samples.len() as u32);
     file.write_all(&header)?;
     file.write_all(&samples)?;
